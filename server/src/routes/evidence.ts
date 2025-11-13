@@ -1,14 +1,13 @@
 import { Router } from "express";
 import multer from "multer";
 import path from "path";
-import { PrismaClient } from "@prisma/client";
-import { z } from "zod";
+import { storage } from "../../storage";
+import { evidenceKindSchema, type EvidenceFileDb } from "@shared/schema";
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // Configure multer for file uploads
-const storage = multer.diskStorage({
+const multerStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, path.join(process.cwd(), "server", "uploads"));
   },
@@ -20,36 +19,44 @@ const storage = multer.diskStorage({
 });
 
 const upload = multer({
-  storage,
+  storage: multerStorage,
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB limit
   },
 });
 
-const evidenceKindSchema = z.enum(["invoice", "tracking", "chat", "tos", "screenshot", "other"]);
-
-// GET /api/evidence/:stripeId - Get all evidence for a dispute
-router.get("/:stripeId", async (req, res) => {
+// GET /api/evidence/:stripeId - Get all evidence for a dispute (user-scoped)
+router.get("/:stripeId", async (req: any, res) => {
   try {
     const { stripeId } = req.params;
+    const userId = req.user.claims.sub;
 
-    const evidence = await prisma.evidenceFile.findMany({
-      where: { stripeId },
-      orderBy: { createdAt: "desc" },
-    });
+    const evidence = await storage.getEvidenceFiles(userId, stripeId);
 
-    res.json({ evidence });
+    // Transform database records to match frontend expected format
+    const transformedEvidence = evidence.map((e: EvidenceFileDb) => ({
+      id: e.id,
+      stripeId: e.stripeId,
+      kind: e.kind,
+      filename: e.filename,
+      storedPath: e.storedPath,
+      sizeBytes: e.sizeBytes,
+      createdAt: e.createdAt?.toISOString() || new Date().toISOString(),
+    }));
+
+    res.json({ evidence: transformedEvidence });
   } catch (error: any) {
     console.error("Error fetching evidence:", error);
     res.status(500).json({ error: error.message || "Failed to fetch evidence" });
   }
 });
 
-// POST /api/evidence/:stripeId/upload - Upload evidence file
-router.post("/:stripeId/upload", upload.single("file"), async (req, res) => {
+// POST /api/evidence/:stripeId/upload - Upload evidence file (user-scoped)
+router.post("/:stripeId/upload", upload.single("file"), async (req: any, res) => {
   try {
     const { stripeId } = req.params;
     const { kind } = req.body;
+    const userId = req.user.claims.sub;
 
     // Validate kind
     const validationResult = evidenceKindSchema.safeParse(kind);
@@ -63,18 +70,28 @@ router.post("/:stripeId/upload", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    // Save evidence metadata to database
-    const evidence = await prisma.evidenceFile.create({
-      data: {
-        stripeId,
-        kind: validationResult.data,
-        filename: req.file.originalname,
-        storedPath: `server/uploads/${req.file.filename}`,
-        sizeBytes: req.file.size,
-      },
+    // Save evidence metadata to database with user scoping
+    const evidence = await storage.createEvidenceFile({
+      userId,
+      stripeId,
+      kind: validationResult.data,
+      filename: req.file.originalname,
+      storedPath: `server/uploads/${req.file.filename}`,
+      sizeBytes: req.file.size,
     });
 
-    res.json({ ok: true, evidence });
+    // Transform to match frontend expected format
+    const transformedEvidence = {
+      id: evidence.id,
+      stripeId: evidence.stripeId,
+      kind: evidence.kind,
+      filename: evidence.filename,
+      storedPath: evidence.storedPath,
+      sizeBytes: evidence.sizeBytes,
+      createdAt: evidence.createdAt?.toISOString() || new Date().toISOString(),
+    };
+
+    res.json({ ok: true, evidence: transformedEvidence });
   } catch (error: any) {
     console.error("Error uploading evidence:", error);
     res.status(500).json({ error: error.message || "Failed to upload evidence" });

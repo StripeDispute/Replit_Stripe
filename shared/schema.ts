@@ -1,4 +1,15 @@
 import { z } from "zod";
+import { sql } from "drizzle-orm";
+import {
+  index,
+  jsonb,
+  pgTable,
+  timestamp,
+  varchar,
+  integer,
+  text,
+} from "drizzle-orm/pg-core";
+import { createInsertSchema } from "drizzle-zod";
 
 // Dispute types
 export const disputeSchema = z.object({
@@ -78,6 +89,62 @@ export const latestPacketResponseSchema = z.object({
 export type LatestPacketResponse = z.infer<typeof latestPacketResponseSchema>;
 
 // Helper function for evidence templates
+// Drizzle Database Tables
+
+// Session storage table (required for Replit Auth)
+export const sessions = pgTable(
+  "sessions",
+  {
+    sid: varchar("sid").primaryKey(),
+    sess: jsonb("sess").notNull(),
+    expire: timestamp("expire").notNull(),
+  },
+  (table) => [index("IDX_session_expire").on(table.expire)],
+);
+
+// User storage table (required for Replit Auth)
+export const users = pgTable("users", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  email: varchar("email").unique(),
+  firstName: varchar("first_name"),
+  lastName: varchar("last_name"),
+  profileImageUrl: varchar("profile_image_url"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export type UpsertUser = typeof users.$inferInsert;
+export type User = typeof users.$inferSelect;
+
+// Evidence files table (now scoped to users for multi-tenant support)
+export const evidenceFiles = pgTable("evidence_files", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id).notNull(),
+  stripeId: varchar("stripe_id").notNull(),
+  kind: varchar("kind").notNull(),
+  filename: varchar("filename").notNull(),
+  storedPath: varchar("stored_path").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type EvidenceFileDb = typeof evidenceFiles.$inferSelect;
+export const insertEvidenceFileSchema = createInsertSchema(evidenceFiles).omit({ id: true, createdAt: true });
+export type InsertEvidenceFile = z.infer<typeof insertEvidenceFileSchema>;
+
+// PDF packets table (now scoped to users for multi-tenant support)
+export const pdfPackets = pgTable("pdf_packets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id).notNull(),
+  stripeId: varchar("stripe_id").notNull(),
+  filename: varchar("filename").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type PdfPacketDb = typeof pdfPackets.$inferSelect;
+export const insertPdfPacketSchema = createInsertSchema(pdfPackets).omit({ id: true, createdAt: true });
+export type InsertPdfPacket = z.infer<typeof insertPdfPacketSchema>;
+
 export function getEvidenceTemplate(reason: string): { required: string[], optional: string[] } {
   const templates: Record<string, { required: string[], optional: string[] }> = {
     fraudulent: {

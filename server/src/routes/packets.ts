@@ -2,16 +2,17 @@ import { Router } from "express";
 import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
-import { PrismaClient } from "@prisma/client";
+import { storage } from "../../storage";
 import { stripe } from "../stripeClient";
+import type { EvidenceFileDb } from "@shared/schema";
 
 const router = Router();
-const prisma = new PrismaClient();
 
-// POST /api/packets/:stripeId - Generate PDF packet
-router.post("/:stripeId", async (req, res) => {
+// POST /api/packets/:stripeId - Generate PDF packet (user-scoped)
+router.post("/:stripeId", async (req: any, res) => {
   try {
     const { stripeId } = req.params;
+    const userId = req.user.claims.sub;
 
     if (!stripe) {
       return res.status(503).json({ error: "Stripe not configured" });
@@ -20,11 +21,8 @@ router.post("/:stripeId", async (req, res) => {
     // Fetch dispute data
     const dispute = await stripe.disputes.retrieve(stripeId);
 
-    // Fetch evidence files
-    const evidence = await prisma.evidenceFile.findMany({
-      where: { stripeId },
-      orderBy: { createdAt: "desc" },
-    });
+    // Fetch evidence files (user-scoped)
+    const evidence = await storage.getEvidenceFiles(userId, stripeId);
 
     // Create PDF
     const timestamp = Date.now();
@@ -101,12 +99,13 @@ router.post("/:stripeId", async (req, res) => {
 
       // Table rows
       doc.fontSize(9).font("Helvetica");
-      evidence.forEach((file) => {
+      evidence.forEach((file: EvidenceFileDb) => {
         const y = doc.y;
         doc.text(file.kind, col1, y);
         doc.text(file.filename.substring(0, 30), col2, y);
         doc.text(`${(file.sizeBytes / 1024).toFixed(1)} KB`, col3, y);
-        doc.text(new Date(file.createdAt).toLocaleDateString(), col4, y);
+        const uploadDate = file.createdAt ? new Date(file.createdAt).toLocaleDateString() : 'N/A';
+        doc.text(uploadDate, col4, y);
         doc.moveDown(0.8);
       });
     }
@@ -142,12 +141,11 @@ router.post("/:stripeId", async (req, res) => {
       writeStream.on("error", reject);
     });
 
-    // Save packet record to database
-    const packet = await prisma.pdfPacket.create({
-      data: {
-        stripeId,
-        filename: `server/packets/${filename}`,
-      },
+    // Save packet record to database (user-scoped)
+    const packet = await storage.createPdfPacket({
+      userId,
+      stripeId,
+      filename: `server/packets/${filename}`,
     });
 
     res.json({
@@ -161,17 +159,23 @@ router.post("/:stripeId", async (req, res) => {
   }
 });
 
-// GET /api/packets/latest/:stripeId - Get latest packet for a dispute
-router.get("/latest/:stripeId", async (req, res) => {
+// GET /api/packets/latest/:stripeId - Get latest packet for a dispute (user-scoped)
+router.get("/latest/:stripeId", async (req: any, res) => {
   try {
     const { stripeId } = req.params;
+    const userId = req.user.claims.sub;
 
-    const packet = await prisma.pdfPacket.findFirst({
-      where: { stripeId },
-      orderBy: { createdAt: "desc" },
-    });
+    const packet = await storage.getLatestPacket(userId, stripeId);
 
-    res.json({ packet });
+    // Transform to match frontend expected format
+    const transformedPacket = packet ? {
+      id: packet.id,
+      stripeId: packet.stripeId,
+      filename: packet.filename,
+      createdAt: packet.createdAt?.toISOString() || new Date().toISOString(),
+    } : null;
+
+    res.json({ packet: transformedPacket });
   } catch (error: any) {
     console.error("Error fetching latest packet:", error);
     res.status(500).json({ error: error.message || "Failed to fetch packet" });
@@ -179,15 +183,16 @@ router.get("/latest/:stripeId", async (req, res) => {
 });
 
 // GET /api/packets/download/:packetId - Download a PDF packet
-router.get("/download/:packetId", async (req, res) => {
+router.get("/download/:packetId", async (req: any, res) => {
   try {
     const { packetId } = req.params;
+    const userId = req.user.claims.sub;
 
-    const packet = await prisma.pdfPacket.findUnique({
-      where: { id: packetId },
-    });
+    // Note: In production you'd want to verify the packet belongs to the user
+    // For now, we'll fetch by ID directly but this should be improved
+    const packet = await storage.getLatestPacket(userId, req.query.stripeId as string);
 
-    if (!packet) {
+    if (!packet || packet.id !== packetId) {
       return res.status(404).json({ error: "Packet not found" });
     }
 
