@@ -1,13 +1,25 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
+import express from "express";
+import path from "path";
+import disputesRouter from "./src/routes/disputes";
+import evidenceRouter from "./src/routes/evidence";
+import packetsRouter from "./src/routes/packets";
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // put application routes here
-  // prefix all routes with /api
+  // Health check endpoint
+  app.get("/api/health", (req, res) => {
+    res.json({ ok: true });
+  });
 
-  // use storage to perform CRUD operations on the storage interface
-  // e.g. storage.insertUser(user) or storage.getUserByUsername(username)
+  // Mount API routers
+  app.use("/api/disputes", disputesRouter);
+  app.use("/api/evidence", evidenceRouter);
+  app.use("/api/packets", packetsRouter);
+
+  // Serve static files for uploads and packets
+  app.use("/static/uploads", express.static(path.join(process.cwd(), "server", "uploads")));
+  app.use("/static/packets", express.static(path.join(process.cwd(), "server", "packets")));
 
   const httpServer = createServer(app);
 

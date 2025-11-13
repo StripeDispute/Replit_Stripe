@@ -1,0 +1,29 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:../dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model EvidenceFile {
+  id          String   @id @default(cuid())
+  stripeId    String
+  kind        String
+  filename    String
+  storedPath  String
+  sizeBytes   Int
+  createdAt   DateTime @default(now())
+
+  @@index([stripeId])
+}
+
+model PdfPacket {
+  id          String   @id @default(cuid())
+  stripeId    String
+  filename    String
+  createdAt   DateTime @default(now())
+
+  @@index([stripeId])
+}
