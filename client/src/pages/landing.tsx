@@ -4,7 +4,9 @@ import { Shield, FileText, Download, TrendingUp } from "lucide-react";
 
 export default function Landing() {
   const handleLogin = () => {
-    window.location.href = "/api/login";
+    // For now, just go straight into the app shell.
+    // Auth is handled by the demoAuth middleware on the backend.
+    window.location.href = "/app";
   };
 
   return (

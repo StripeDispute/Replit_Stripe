@@ -74,7 +74,7 @@ export default function Settings() {
               </li>
               <li className="flex gap-2">
                 <span className="font-medium text-foreground">4.</span>
-                <span>Set STRIPE_SECRET_KEY in your Replit Secrets</span>
+                <span>Set STRIPE_SECRET_KEY in your environment (.env or host env vars)</span>
               </li>
               <li className="flex gap-2">
                 <span className="font-medium text-foreground">5.</span>
