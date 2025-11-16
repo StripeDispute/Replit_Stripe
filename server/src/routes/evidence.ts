@@ -1,6 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import path from "path";
+import fs from "fs";
 import { storage } from "../../storage";
 import { evidenceKindSchema, type EvidenceFileDb } from "@shared/schema";
 
@@ -92,9 +93,45 @@ router.post("/:stripeId/upload", upload.single("file"), async (req: any, res) =>
     };
 
     res.json({ ok: true, evidence: transformedEvidence });
-  } catch (error: any) {
+    } catch (error: any) {
     console.error("Error uploading evidence:", error);
     res.status(500).json({ error: error.message || "Failed to upload evidence" });
+  }
+});
+
+// DELETE /api/evidence/:id - Delete a single evidence file (user-scoped)
+router.delete("/:id", async (req: any, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.claims.sub;
+
+    // Look up the evidence record first so we know the file path
+    const evidence = await storage.getEvidenceFileById(userId, id);
+
+    if (!evidence) {
+      return res.status(404).json({ error: "Evidence not found" });
+    }
+
+    // Delete DB record
+    await storage.deleteEvidenceFile(userId, id);
+
+    // Best-effort delete on-disk file
+    if (evidence.storedPath) {
+      const fullPath = path.isAbsolute(evidence.storedPath)
+        ? evidence.storedPath
+        : path.join(process.cwd(), evidence.storedPath);
+
+      fs.unlink(fullPath, (err) => {
+        if (err) {
+          console.warn("Failed to delete evidence file from disk:", err);
+        }
+      });
+    }
+
+    res.json({ ok: true });
+  } catch (error: any) {
+    console.error("Error deleting evidence:", error);
+    res.status(500).json({ error: error.message || "Failed to delete evidence" });
   }
 });
 

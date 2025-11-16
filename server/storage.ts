@@ -21,6 +21,8 @@ export interface IStorage {
   // Evidence file operations (scoped by user)
   getEvidenceFiles(userId: string, stripeId: string): Promise<EvidenceFileDb[]>;
   createEvidenceFile(evidence: InsertEvidenceFile): Promise<EvidenceFileDb>;
+  getEvidenceFileById(userId: string, id: string): Promise<EvidenceFileDb | undefined>;
+  deleteEvidenceFile(userId: string, id: string): Promise<void>;
   
   // PDF packet operations (scoped by user)
   getLatestPacket(userId: string, stripeId: string): Promise<PdfPacketDb | undefined>;
@@ -61,6 +63,21 @@ export class DatabaseStorage implements IStorage {
   async createEvidenceFile(evidence: InsertEvidenceFile): Promise<EvidenceFileDb> {
     const [file] = await db.insert(evidenceFiles).values(evidence).returning();
     return file;
+  }
+    async getEvidenceFileById(userId: string, id: string): Promise<EvidenceFileDb | undefined> {
+    const [file] = await db
+      .select()
+      .from(evidenceFiles)
+      .where(and(eq(evidenceFiles.userId, userId), eq(evidenceFiles.id, id)))
+      .limit(1);
+
+    return file;
+  }
+
+  async deleteEvidenceFile(userId: string, id: string): Promise<void> {
+    await db
+      .delete(evidenceFiles)
+      .where(and(eq(evidenceFiles.userId, userId), eq(evidenceFiles.id, id)));
   }
 
   // PDF packet operations (scoped by user)
