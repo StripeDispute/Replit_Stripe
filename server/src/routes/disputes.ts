@@ -65,8 +65,8 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// GET /api/disputes/:id/explanation
-router.get("/:id/explanation", async (req, res, next) => {
+// GET /api/disputes/explanation/:id
+router.get("/explanation/:id", async (req, res, next) => {
   try {
     const stripeId = req.params.id;
     // For now, stub user; later this will come from real auth
@@ -102,8 +102,8 @@ router.get("/:id/explanation", async (req, res, next) => {
   }
 });
 
-// PUT /api/disputes/:id/explanation
-router.put("/:id/explanation", async (req, res, next) => {
+// PUT /api/disputes/explanation/:id
+router.put("/explanation/:id", async (req, res, next) => {
   try {
     const stripeId = req.params.id;
     const userId = (req as any).user?.id ?? "demo-user";
