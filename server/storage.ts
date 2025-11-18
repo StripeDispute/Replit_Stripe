@@ -1,99 +1,128 @@
+// server/storage.ts
+import { db } from "./db";
 import {
-  users,
   evidenceFiles,
   pdfPackets,
-  type User,
-  type UpsertUser,
-  type EvidenceFileDb,
+  disputeExplanations,
   type InsertEvidenceFile,
-  type PdfPacketDb,
   type InsertPdfPacket,
+  type EvidenceFileDb,
+  type PdfPacketDb,
+  type DisputeExplanationDb,
 } from "@shared/schema";
-import { db } from "./db";
-import { eq, and, desc } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
-// Storage interface for all CRUD operations
-export interface IStorage {
-  // User operations (required for Replit Auth)
-  getUser(id: string): Promise<User | undefined>;
-  upsertUser(user: UpsertUser): Promise<User>;
+class DatabaseStorage {
+  // Evidence files
 
-  // Evidence file operations (scoped by user)
-  getEvidenceFiles(userId: string, stripeId: string): Promise<EvidenceFileDb[]>;
-  createEvidenceFile(evidence: InsertEvidenceFile): Promise<EvidenceFileDb>;
-  getEvidenceFileById(userId: string, id: string): Promise<EvidenceFileDb | undefined>;
-  deleteEvidenceFile(userId: string, id: string): Promise<void>;
-  
-  // PDF packet operations (scoped by user)
-  getLatestPacket(userId: string, stripeId: string): Promise<PdfPacketDb | undefined>;
-  createPdfPacket(packet: InsertPdfPacket): Promise<PdfPacketDb>;
-}
-
-export class DatabaseStorage implements IStorage {
-  // User operations (required for Replit Auth)
-  async getUser(id: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.id, id));
-    return user;
+  async getEvidenceFiles(
+    userId: string,
+    stripeId: string,
+  ): Promise<EvidenceFileDb[]> {
+    return db
+      .select()
+      .from(evidenceFiles)
+      .where(
+        and(
+          eq(evidenceFiles.userId, userId),
+          eq(evidenceFiles.stripeId, stripeId),
+        ),
+      )
+      .orderBy(evidenceFiles.createdAt);
   }
 
-  async upsertUser(userData: UpsertUser): Promise<User> {
-    const [user] = await db
-      .insert(users)
-      .values(userData)
-      .onConflictDoUpdate({
-        target: users.id,
-        set: {
-          ...userData,
-          updatedAt: new Date(),
-        },
-      })
+  async createEvidenceFile(
+    data: InsertEvidenceFile & { userId: string },
+  ): Promise<EvidenceFileDb> {
+    const [row] = await db
+      .insert(evidenceFiles)
+      .values(data)
       .returning();
-    return user;
-  }
-
-  // Evidence file operations (scoped by user)
-  async getEvidenceFiles(userId: string, stripeId: string): Promise<EvidenceFileDb[]> {
-    return await db
-      .select()
-      .from(evidenceFiles)
-      .where(and(eq(evidenceFiles.userId, userId), eq(evidenceFiles.stripeId, stripeId)))
-      .orderBy(desc(evidenceFiles.createdAt));
-  }
-
-  async createEvidenceFile(evidence: InsertEvidenceFile): Promise<EvidenceFileDb> {
-    const [file] = await db.insert(evidenceFiles).values(evidence).returning();
-    return file;
-  }
-    async getEvidenceFileById(userId: string, id: string): Promise<EvidenceFileDb | undefined> {
-    const [file] = await db
-      .select()
-      .from(evidenceFiles)
-      .where(and(eq(evidenceFiles.userId, userId), eq(evidenceFiles.id, id)))
-      .limit(1);
-
-    return file;
+    return row;
   }
 
   async deleteEvidenceFile(userId: string, id: string): Promise<void> {
     await db
       .delete(evidenceFiles)
-      .where(and(eq(evidenceFiles.userId, userId), eq(evidenceFiles.id, id)));
+      .where(and(eq(evidenceFiles.id, id), eq(evidenceFiles.userId, userId)));
   }
 
-  // PDF packet operations (scoped by user)
-  async getLatestPacket(userId: string, stripeId: string): Promise<PdfPacketDb | undefined> {
-    const [packet] = await db
+  // PDF packets
+
+  async getLatestPacket(
+    userId: string,
+    stripeId: string,
+  ): Promise<PdfPacketDb | null> {
+    const rows = await db
       .select()
       .from(pdfPackets)
-      .where(and(eq(pdfPackets.userId, userId), eq(pdfPackets.stripeId, stripeId)))
+      .where(
+        and(eq(pdfPackets.userId, userId), eq(pdfPackets.stripeId, stripeId)),
+      )
       .orderBy(desc(pdfPackets.createdAt))
       .limit(1);
-    return packet;
+
+    return rows[0] ?? null;
   }
 
-  async createPdfPacket(packet: InsertPdfPacket): Promise<PdfPacketDb> {
-    const [pdfPacket] = await db.insert(pdfPackets).values(packet).returning();
-    return pdfPacket;
+  async createPdfPacket(
+    data: InsertPdfPacket & { userId: string },
+  ): Promise<PdfPacketDb> {
+    const [row] = await db
+      .insert(pdfPackets)
+      .values(data)
+      .returning();
+    return row;
+  }
+
+  // Dispute explanations
+
+  async getDisputeExplanation(
+    userId: string,
+    stripeId: string,
+  ): Promise<DisputeExplanationDb | null> {
+    const rows = await db
+      .select()
+      .from(disputeExplanations)
+      .where(
+        and(
+          eq(disputeExplanations.userId, userId),
+          eq(disputeExplanations.stripeId, stripeId),
+        ),
+      )
+      .limit(1);
+
+    return rows[0] ?? null;
+  }
+
+  async upsertDisputeExplanation(
+    userId: string,
+    stripeId: string,
+    explanation: string,
+  ): Promise<DisputeExplanationDb> {
+    const existing = await this.getDisputeExplanation(userId, stripeId);
+
+    if (!existing) {
+      const [row] = await db
+        .insert(disputeExplanations)
+        .values({
+          userId,
+          stripeId,
+          explanation,
+        })
+        .returning();
+      return row;
+    } else {
+      const [row] = await db
+        .update(disputeExplanations)
+        .set({
+          explanation,
+          updatedAt: new Date(),
+        })
+        .where(eq(disputeExplanations.id, existing.id))
+        .returning();
+      return row;
+    }
   }
 }
 

@@ -8,6 +8,7 @@ import {
   varchar,
   integer,
   text,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 
@@ -18,7 +19,16 @@ export const disputeSchema = z.object({
   reason: z.string(),
   amount: z.number(),
   currency: z.string(),
-  status: z.enum(["needs_response", "under_review", "warning_needs_response", "warning_under_review", "warning_closed", "charge_refunded", "lost", "won"]),
+  status: z.enum([
+    "needs_response",
+    "under_review",
+    "warning_needs_response",
+    "warning_under_review",
+    "warning_closed",
+    "charge_refunded",
+    "lost",
+    "won",
+  ]),
   createdAt: z.number(),
   dueBy: z.number().nullable(),
 });
@@ -26,7 +36,14 @@ export const disputeSchema = z.object({
 export type Dispute = z.infer<typeof disputeSchema>;
 
 // Evidence file types
-export const evidenceKindSchema = z.enum(["invoice", "tracking", "chat", "tos", "screenshot", "other"]);
+export const evidenceKindSchema = z.enum([
+  "invoice",
+  "tracking",
+  "chat",
+  "tos",
+  "screenshot",
+  "other",
+]);
 export type EvidenceKind = z.infer<typeof evidenceKindSchema>;
 
 export const evidenceFileSchema = z.object({
@@ -88,10 +105,11 @@ export const latestPacketResponseSchema = z.object({
 
 export type LatestPacketResponse = z.infer<typeof latestPacketResponseSchema>;
 
-// Helper function for evidence templates
+// ─────────────────────────────────────────────
 // Drizzle Database Tables
+// ─────────────────────────────────────────────
 
-// Session storage table (required for Replit Auth)
+// Session storage table (required previously for Replit Auth)
 export const sessions = pgTable(
   "sessions",
   {
@@ -102,7 +120,7 @@ export const sessions = pgTable(
   (table) => [index("IDX_session_expire").on(table.expire)],
 );
 
-// User storage table (required for Replit Auth)
+// User storage table
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: varchar("email").unique(),
@@ -116,7 +134,7 @@ export const users = pgTable("users", {
 export type UpsertUser = typeof users.$inferInsert;
 export type User = typeof users.$inferSelect;
 
-// Evidence files table (now scoped to users for multi-tenant support)
+// Evidence files table (scoped to users for multi-tenant support)
 export const evidenceFiles = pgTable("evidence_files", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id).notNull(),
@@ -129,10 +147,13 @@ export const evidenceFiles = pgTable("evidence_files", {
 });
 
 export type EvidenceFileDb = typeof evidenceFiles.$inferSelect;
-export const insertEvidenceFileSchema = createInsertSchema(evidenceFiles).omit({ id: true, createdAt: true });
+export const insertEvidenceFileSchema = createInsertSchema(evidenceFiles).omit({
+  id: true,
+  createdAt: true,
+});
 export type InsertEvidenceFile = z.infer<typeof insertEvidenceFileSchema>;
 
-// PDF packets table (now scoped to users for multi-tenant support)
+// PDF packets table (scoped to users)
 export const pdfPackets = pgTable("pdf_packets", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id).notNull(),
@@ -142,44 +163,125 @@ export const pdfPackets = pgTable("pdf_packets", {
 });
 
 export type PdfPacketDb = typeof pdfPackets.$inferSelect;
-export const insertPdfPacketSchema = createInsertSchema(pdfPackets).omit({ id: true, createdAt: true });
+export const insertPdfPacketSchema = createInsertSchema(pdfPackets).omit({
+  id: true,
+  createdAt: true,
+});
 export type InsertPdfPacket = z.infer<typeof insertPdfPacketSchema>;
 
-export function getEvidenceTemplate(reason: string): { required: string[], optional: string[] } {
-  const templates: Record<string, { required: string[], optional: string[] }> = {
-    fraudulent: {
-      required: ["Invoice", "Customer communication", "Proof of delivery"],
-      optional: ["Shipping tracking", "Customer login history", "Terms of service"],
-    },
-    product_not_received: {
-      required: ["Shipping tracking", "Proof of delivery", "Invoice"],
-      optional: ["Customer communication", "Return policy"],
-    },
-    unrecognized: {
-      required: ["Invoice", "Customer communication", "Proof of delivery"],
-      optional: ["Customer login history", "Terms of service"],
-    },
-    duplicate: {
-      required: ["Invoice", "Payment receipt", "Customer communication"],
-      optional: ["Order confirmation", "Shipping tracking"],
-    },
-    subscription_canceled: {
-      required: ["Terms of service", "Cancellation policy", "Customer communication"],
-      optional: ["Invoice", "Usage logs"],
-    },
-    product_unacceptable: {
-      required: ["Product description", "Customer communication", "Return policy"],
-      optional: ["Invoice", "Proof of delivery"],
-    },
-    credit_not_processed: {
-      required: ["Refund receipt", "Customer communication"],
-      optional: ["Invoice", "Return tracking"],
-    },
-    general: {
-      required: ["Invoice", "Customer communication"],
-      optional: ["Terms of service", "Proof of delivery"],
-    },
+// New: dispute explanations table (per user + dispute)
+export const disputeExplanations = pgTable(
+  "dispute_explanations",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id").references(() => users.id).notNull(),
+    stripeId: varchar("stripe_id").notNull(),
+    explanation: text("explanation").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("uniq_dispute_explanation_user_stripe").on(
+      table.userId,
+      table.stripeId,
+    ),
+  ],
+);
+
+export type DisputeExplanationDb = typeof disputeExplanations.$inferSelect;
+
+// Helper function for evidence templates (Stripe-aligned)
+export function getEvidenceTemplate(
+  reason: string,
+): { required: string[]; optional: string[] } {
+  const base = {
+    required: [
+      "Screenshot of invoice/receipt showing date, amount, and items purchased",
+      "Screenshot of relevant refund/cancellation policy as seen at checkout",
+      "Screenshot of customer communication relevant to this dispute (email/chat)",
+    ],
+    optional: [
+      "Screenshot of customer account login or usage logs",
+      "Screenshot of additional internal notes or CRM records",
+    ],
   };
 
-  return templates[reason] || templates.general;
+  const templates: Record<string, { required: string[]; optional: string[] }> = {
+    fraudulent: {
+      required: [
+        "Screenshot of invoice/receipt showing date, amount, and items purchased",
+        "Screenshot of AVS/CVC / 3DS result or payment details from Stripe dashboard",
+        "Screenshot of customer login history (IP, device, timestamps) if applicable",
+      ],
+      optional: [
+        "Screenshot of communication where customer acknowledges the charge or usage",
+        "Screenshot of terms of service describing how the service is accessed/used",
+      ],
+    },
+    product_not_received: {
+      required: [
+        "Screenshot of shipping/tracking page showing delivery to cardholder's address",
+        "Screenshot of invoice/receipt showing shipping address and items",
+        "Screenshot of any communication where customer confirms or discusses delivery",
+      ],
+      optional: [
+        "Screenshot of internal fulfillment system showing shipment and delivery events",
+        "Screenshot of refund/return policy relevant to non-delivery claims",
+      ],
+    },
+    unrecognized: {
+      required: [
+        "Screenshot of invoice/receipt showing merchant descriptor and date",
+        "Screenshot of payment details from Stripe dashboard (last 4 digits, brand)",
+        "Screenshot of login or account creation showing customer email / name",
+      ],
+      optional: [
+        "Screenshot of prior successful transactions from the same customer",
+        "Screenshot of communication where customer acknowledges the charge or account",
+      ],
+    },
+    duplicate: {
+      required: [
+        "Screenshot of invoices/receipts for both charges showing timestamps",
+        "Screenshot of Stripe dashboard showing two charges for the same order",
+        "Screenshot of any refund that was processed for the duplicate charge",
+      ],
+      optional: [
+        "Screenshot of communication where customer requested/acknowledged refund",
+      ],
+    },
+    subscription_canceled: {
+      required: [
+        "Screenshot of subscription details (renewal date, amount) from Stripe or your app",
+        "Screenshot of cancellation policy as shown to the customer",
+        "Screenshot of communication showing when and how the customer canceled (if applicable)",
+      ],
+      optional: [
+        "Screenshot of usage logs after cancellation date (if customer continued to use service)",
+      ],
+    },
+    product_unacceptable: {
+      required: [
+        "Screenshot of product/service description as shown on your site",
+        "Screenshot of invoice/receipt showing what was purchased",
+        "Screenshot of communication where customer describes the issue",
+      ],
+      optional: [
+        "Screenshot of return/refund policy relevant to dissatisfaction or defects",
+        "Screenshot of any resolution offered (replacement, partial refund, etc.)",
+      ],
+    },
+    credit_not_processed: {
+      required: [
+        "Screenshot of refund in Stripe dashboard (date, amount, transaction ID)",
+        "Screenshot of communication where you confirmed a refund/credit to the customer",
+      ],
+      optional: [
+        "Screenshot of internal accounting or CRM records showing refund request handling",
+      ],
+    },
+    general: base,
+  };
+
+  return templates[reason] || base;
 }

@@ -1,4 +1,5 @@
-import { useState } from "react";
+// client/src/pages/dispute-detail.tsx
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 import {
@@ -25,6 +27,7 @@ import {
   AlertCircle,
   Loader2,
   Trash2,
+  Eye,
 } from "lucide-react";
 import type {
   EvidenceFile,
@@ -73,13 +76,17 @@ function formatBytes(bytes: number): string {
   );
 }
 
+function formatMB(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(2) + " MB";
+}
+
 export default function DisputeDetail() {
   const [, params] = useRoute("/app/disputes/:stripeId");
   const stripeId = params?.stripeId || "";
   const { toast } = useToast();
-  const [selectedKind, setSelectedKind] =
-    useState<EvidenceKind>("invoice");
+  const [selectedKind, setSelectedKind] = useState<EvidenceKind>("invoice");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [explanationDraft, setExplanationDraft] = useState("");
 
   // Fetch dispute details
   const {
@@ -105,10 +112,27 @@ export default function DisputeDetail() {
   const {
     data: packetData,
     isLoading: packetLoading,
+    error: packetError,
   } = useQuery<LatestPacketResponse>({
     queryKey: ["/api/packets/latest", stripeId],
     enabled: !!stripeId,
   });
+
+  // Fetch dispute explanation
+  const {
+    data: explanationData,
+    isLoading: explanationLoading,
+    error: explanationError,
+  } = useQuery<{ explanation: string }>({
+    queryKey: ["/api/disputes/explanation", stripeId],
+    enabled: !!stripeId,
+  });
+
+  useEffect(() => {
+    if (explanationData && !explanationLoading) {
+      setExplanationDraft(explanationData.explanation || "");
+    }
+  }, [explanationData, explanationLoading]);
 
   // Upload evidence mutation
   const uploadMutation = useMutation({
@@ -119,19 +143,17 @@ export default function DisputeDetail() {
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        throw new Error((error as any).error || "Upload failed");
+        throw new Error(error.error || "Upload failed");
       }
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["/api/evidence", stripeId],
-      });
+      queryClient.invalidateQueries({ queryKey: ["/api/evidence", stripeId] });
       setSelectedFile(null);
       toast({
         title: "Evidence uploaded",
         description:
-          "Your evidence file has been uploaded successfully.",
+          "Your evidence image has been uploaded successfully and will be embedded in the PDF packet.",
       });
     },
     onError: (error: Error) => {
@@ -143,25 +165,26 @@ export default function DisputeDetail() {
     },
   });
 
-  // Delete evidence mutation (new)
+  // Delete evidence mutation
   const deleteMutation = useMutation({
     mutationFn: async (evidenceId: string) => {
-      const response = await fetch(`/api/evidence/${evidenceId}`, {
-        method: "DELETE",
-      });
+      const response = await fetch(
+        `/api/evidence/${stripeId}/${evidenceId}`,
+        {
+          method: "DELETE",
+        },
+      );
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        throw new Error((error as any).error || "Delete failed");
+        throw new Error(error.error || "Delete failed");
       }
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["/api/evidence", stripeId],
-      });
+      queryClient.invalidateQueries({ queryKey: ["/api/evidence", stripeId] });
       toast({
         title: "Evidence deleted",
-        description: "The evidence file was removed.",
+        description: "The selected evidence has been removed.",
       });
     },
     onError: (error: Error) => {
@@ -181,7 +204,7 @@ export default function DisputeDetail() {
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        throw new Error((error as any).error || "Generation failed");
+        throw new Error(error.error || "Generation failed");
       }
       return response.json();
     },
@@ -191,12 +214,48 @@ export default function DisputeDetail() {
       });
       toast({
         title: "PDF packet generated",
-        description: "Your evidence packet is ready to download.",
+        description:
+          "Your dispute evidence packet is ready to download and submit to Stripe.",
       });
     },
     onError: (error: Error) => {
       toast({
         title: "Generation failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Save explanation mutation
+  const saveExplanationMutation = useMutation({
+    mutationFn: async (explanation: string) => {
+      const response = await fetch(`/api/disputes/${stripeId}/explanation`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ explanation }),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || "Failed to save explanation");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["/api/disputes/explanation", stripeId],
+      });
+      toast({
+        title: "Explanation saved",
+        description:
+          "Your dispute explanation will be included at the top of the PDF packet.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to save explanation",
         description: error.message,
         variant: "destructive",
       });
@@ -213,19 +272,59 @@ export default function DisputeDetail() {
       return;
     }
 
+    const allowedTypes = ["image/png", "image/jpeg"];
+    if (!allowedTypes.includes(selectedFile.type)) {
+      toast({
+        title: "Unsupported file type",
+        description:
+          "Only PNG and JPEG images are supported. Please convert documents (like PDFs) to screenshots before uploading.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const maxFileSizeBytes = 2 * 1024 * 1024; // 2MB
+    if (selectedFile.size > maxFileSizeBytes) {
+      toast({
+        title: "File too large",
+        description:
+          "Each image must be 2MB or smaller to keep the final packet within Stripe's limits. Please resize or compress your screenshot.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const formData = new FormData();
     formData.append("file", selectedFile);
     formData.append("kind", selectedKind);
     uploadMutation.mutate(formData);
   };
 
-  const handleDeleteEvidence = (id: string) => {
+  const handleDelete = (id: string) => {
     deleteMutation.mutate(id);
+  };
+
+  const handleSaveExplanation = () => {
+    if (!explanationDraft.trim()) {
+      toast({
+        title: "Explanation required",
+        description:
+          "Please provide a short, clear explanation of why this dispute should be resolved in your favor.",
+        variant: "destructive",
+      });
+      return;
+    }
+    saveExplanationMutation.mutate(explanationDraft.trim());
   };
 
   const dispute = disputeData?.dispute;
   const evidence = evidenceData?.evidence || [];
   const packet = packetData?.packet;
+
+  const totalEvidenceBytes = useMemo(
+    () => evidence.reduce((sum, f) => sum + (f.sizeBytes || 0), 0),
+    [evidence],
+  );
 
   if (disputeError) {
     return (
@@ -283,82 +382,69 @@ export default function DisputeDetail() {
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         {disputeLoading ? (
-          [...Array(4)].map((_, i) => (
-            <Skeleton key={i} className="h-24" />
-          ))
-        ) : (
-          dispute && (
-            <>
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Reason
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p
-                    className="text-lg font-semibold"
-                    data-testid="text-reason"
-                  >
-                    {dispute.reason.replace(/_/g, " ")}
-                  </p>
-                </CardContent>
-              </Card>
+          [...Array(4)].map((_, i) => <Skeleton key={i} className="h-24" />)
+        ) : dispute ? (
+          <>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Reason
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-lg font-semibold" data-testid="text-reason">
+                  {dispute.reason.replace(/_/g, " ")}
+                </p>
+              </CardContent>
+            </Card>
 
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Amount
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p
-                    className="text-lg font-semibold"
-                    data-testid="text-amount"
-                  >
-                    {formatCurrency(dispute.amount, dispute.currency)}
-                  </p>
-                </CardContent>
-              </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Amount
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-lg font-semibold" data-testid="text-amount">
+                  {formatCurrency(dispute.amount, dispute.currency)}
+                </p>
+              </CardContent>
+            </Card>
 
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Status
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p
-                    className="text-lg font-semibold"
-                    data-testid="text-status"
-                  >
-                    {dispute.status.replace(/_/g, " ")}
-                  </p>
-                </CardContent>
-              </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Status
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-lg font-semibold" data-testid="text-status">
+                  {dispute.status.replace(/_/g, " ")}
+                </p>
+              </CardContent>
+            </Card>
 
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Due Date
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p
-                    className="text-lg font-semibold"
-                    data-testid="text-due-date"
-                  >
-                    {formatDate(
-                      dispute.evidence_details?.due_by
-                        ? dispute.evidence_details.due_by * 1000
-                        : null,
-                    )}
-                  </p>
-                </CardContent>
-              </Card>
-            </>
-          )
-        )}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Due Date
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p
+                  className="text-lg font-semibold"
+                  data-testid="text-due-date"
+                >
+                  {formatDate(
+                    dispute.evidence_details?.due_by
+                      ? dispute.evidence_details.due_by * 1000
+                      : null,
+                  )}
+                </p>
+              </CardContent>
+            </Card>
+          </>
+        ) : null}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -369,8 +455,9 @@ export default function DisputeDetail() {
             <CardHeader>
               <CardTitle>Evidence Checklist</CardTitle>
               <p className="text-sm text-muted-foreground mt-1">
-                Based on the dispute reason, here's what you should
-                provide
+                Based on the dispute reason, Stripe expects clear evidence for
+                authorization, delivery/service, policy, and customer
+                communication.
               </p>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -412,12 +499,70 @@ export default function DisputeDetail() {
             </CardContent>
           </Card>
 
+          {/* Dispute Explanation */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Dispute Explanation</CardTitle>
+              <p className="text-sm text-muted-foreground mt-1">
+                This short narrative appears at the top of your evidence packet.
+                Keep it clear, factual, and focused on why the charge is valid
+                and properly fulfilled.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {explanationLoading ? (
+                <Skeleton className="h-32 w-full" />
+              ) : (
+                <>
+                  <Textarea
+                    value={explanationDraft}
+                    onChange={(e) => setExplanationDraft(e.target.value)}
+                    placeholder={
+                      "Example: On Jan 5, the cardholder purchased a 3-month subscription for $120. They accessed the service multiple times (see Exhibits A–C). Our refund policy clearly states that subscriptions are non-refundable once used."
+                    }
+                    rows={6}
+                  />
+                  <div className="flex justify-end">
+                    <Button
+                      onClick={handleSaveExplanation}
+                      disabled={saveExplanationMutation.isPending}
+                    >
+                      {saveExplanationMutation.isPending ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Saving...
+                        </>
+                      ) : (
+                        "Save Explanation"
+                      )}
+                    </Button>
+                  </div>
+                  {explanationError && (
+                    <p className="text-xs text-destructive">
+                      Error loading existing explanation:{" "}
+                      {explanationError.message}
+                    </p>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Existing Evidence */}
           <Card>
             <CardHeader>
               <CardTitle>
                 Uploaded Evidence ({evidence.length})
               </CardTitle>
+              {totalEvidenceBytes > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Estimated total evidence size:{" "}
+                  <span className="font-medium">
+                    {formatMB(totalEvidenceBytes)} / 4.50 MB
+                  </span>{" "}
+                  (Stripe’s limit is 4.5 MB across all uploads.)
+                </p>
+              )}
             </CardHeader>
             <CardContent>
               {evidenceLoading ? (
@@ -427,9 +572,9 @@ export default function DisputeDetail() {
                   ))}
                 </div>
               ) : evidenceError ? (
-                <div className="text-sm text-destructive">
-                  Error loading evidence.
-                </div>
+                <p className="text-sm text-destructive">
+                  Error loading evidence: {String(evidenceError)}
+                </p>
               ) : evidence.length === 0 ? (
                 <div
                   className="text-center py-8 text-muted-foreground"
@@ -453,8 +598,7 @@ export default function DisputeDetail() {
                             {file.filename}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {file.kind} •{" "}
-                            {formatBytes(file.sizeBytes)} •{" "}
+                            {file.kind} • {formatBytes(file.sizeBytes)} •{" "}
                             {formatDate(
                               new Date(file.createdAt).getTime(),
                             )}
@@ -462,21 +606,35 @@ export default function DisputeDetail() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Badge variant="outline">{file.kind}</Badge>
+                        {/* View (for images) */}
                         <Button
+                          asChild
                           variant="outline"
                           size="icon"
-                          onClick={() =>
-                            handleDeleteEvidence(file.id)
-                          }
+                          className="h-8 w-8"
+                        >
+                          <a
+                            href={`/${file.storedPath.replace(
+                              /^server\//,
+                              "",
+                            )}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </a>
+                        </Button>
+                        {/* Delete */}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-destructive hover:text-destructive"
+                          onClick={() => handleDelete(file.id)}
                           disabled={deleteMutation.isPending}
                         >
-                          {deleteMutation.isPending ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="h-4 w-4" />
-                          )}
+                          <Trash2 className="h-4 w-4" />
                         </Button>
+                        <Badge variant="outline">{file.kind}</Badge>
                       </div>
                     </div>
                   ))}
@@ -494,6 +652,14 @@ export default function DisputeDetail() {
               <CardTitle>Upload Evidence</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              <p className="text-xs text-muted-foreground">
+                Accepted formats: <span className="font-medium">PNG, JPEG</span>
+                . For PDFs or other documents, take clear screenshots of the
+                relevant sections. Stripe limits total evidence uploads to{" "}
+                <span className="font-medium">4.5 MB</span> and{" "}
+                <span className="font-medium">50 pages</span>.
+              </p>
+
               <div>
                 <Label
                   htmlFor="kind"
@@ -503,9 +669,7 @@ export default function DisputeDetail() {
                 </Label>
                 <Select
                   value={selectedKind}
-                  onValueChange={(v) =>
-                    setSelectedKind(v as EvidenceKind)
-                  }
+                  onValueChange={(v) => setSelectedKind(v as EvidenceKind)}
                 >
                   <SelectTrigger
                     id="kind"
@@ -514,18 +678,20 @@ export default function DisputeDetail() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="invoice">Invoice</SelectItem>
-                    <SelectItem value="tracking">Tracking</SelectItem>
+                    <SelectItem value="invoice">Invoice / Receipt</SelectItem>
+                    <SelectItem value="tracking">
+                      Shipping / Tracking
+                    </SelectItem>
                     <SelectItem value="chat">
-                      Chat/Communication
+                      Email / Chat Communication
                     </SelectItem>
                     <SelectItem value="tos">
-                      Terms of Service
+                      Terms / Refund Policy
                     </SelectItem>
                     <SelectItem value="screenshot">
-                      Screenshot
+                      Other Screenshot
                     </SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
+                    <SelectItem value="other">Other Document</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -540,15 +706,13 @@ export default function DisputeDetail() {
                 <Input
                   id="file"
                   type="file"
-                  onChange={(e) =>
-                    setSelectedFile(e.target.files?.[0] || null)
-                  }
+                  accept="image/png,image/jpeg"
+                  onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
                   data-testid="input-file"
                 />
                 {selectedFile && (
                   <p className="text-xs text-muted-foreground mt-2">
-                    {selectedFile.name} (
-                    {formatBytes(selectedFile.size)})
+                    {selectedFile.name} ({formatBytes(selectedFile.size)})
                   </p>
                 )}
               </div>
@@ -582,6 +746,10 @@ export default function DisputeDetail() {
             <CardContent className="space-y-4">
               {packetLoading ? (
                 <Skeleton className="h-20 w-full" />
+              ) : packetError ? (
+                <p className="text-sm text-destructive">
+                  Error loading packet: {String(packetError)}
+                </p>
               ) : packet ? (
                 <div className="space-y-4">
                   <div className="p-4 rounded-lg bg-muted">
@@ -589,9 +757,7 @@ export default function DisputeDetail() {
                       Last Generated
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {formatDate(
-                        new Date(packet.createdAt).getTime(),
-                      )}
+                      {formatDate(new Date(packet.createdAt).getTime())}
                     </p>
                   </div>
                   <a
