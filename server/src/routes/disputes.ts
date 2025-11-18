@@ -87,7 +87,6 @@ router.get("/explanation/:id", async (req, res, next) => {
     const row = rows[0];
 
     if (!row) {
-      // Frontend expects { explanation: null } if none exists
       return res.json({ explanation: null });
     }
 
@@ -102,7 +101,72 @@ router.get("/explanation/:id", async (req, res, next) => {
   }
 });
 
-// PUT /api/disputes/explanation/:id
+// Shared logic to create/update explanation in DB
+async function upsertExplanation(stripeId: string, userId: string, text: string) {
+  const explanationText = text.trim();
+
+  const existing = await db
+    .select()
+    .from(disputeExplanations)
+    .where(
+      and(
+        eq(disputeExplanations.stripeId, stripeId),
+        eq(disputeExplanations.userId, userId),
+      ),
+    )
+    .orderBy(desc(disputeExplanations.updatedAt))
+    .limit(1);
+
+  if (existing[0]) {
+    const [updated] = await db
+      .update(disputeExplanations)
+      .set({
+        explanation: explanationText,
+        updatedAt: new Date(),
+      })
+      .where(eq(disputeExplanations.id, existing[0].id))
+      .returning();
+
+    return updated;
+  } else {
+    const [inserted] = await db
+      .insert(disputeExplanations)
+      .values({
+        userId,
+        stripeId,
+        explanation: explanationText,
+      })
+      .returning();
+
+    return inserted;
+  }
+}
+
+// POST /api/disputes/:id/explanation  (what the frontend currently calls)
+router.post("/:id/explanation", async (req, res, next) => {
+  try {
+    const stripeId = req.params.id;
+    const userId = (req as any).user?.id ?? "demo-user";
+    const { text } = req.body as { text?: string };
+
+    if (typeof text !== "string" || !text.trim()) {
+      return res.status(400).json({ error: "Explanation text is required" });
+    }
+
+    const row = await upsertExplanation(stripeId, userId, text);
+
+    return res.json({
+      explanation: {
+        text: row.explanation,
+        updatedAt: row.updatedAt,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/disputes/explanation/:id  (optional, for future use)
 router.put("/explanation/:id", async (req, res, next) => {
   try {
     const stripeId = req.params.id;
@@ -110,51 +174,10 @@ router.put("/explanation/:id", async (req, res, next) => {
     const { text } = req.body as { text?: string };
 
     if (typeof text !== "string" || !text.trim()) {
-      return res
-        .status(400)
-        .json({ error: "Explanation text is required" });
+      return res.status(400).json({ error: "Explanation text is required" });
     }
 
-    const explanationText = text.trim();
-
-    // Check if there is already an explanation for this user + dispute
-    const existing = await db
-      .select()
-      .from(disputeExplanations)
-      .where(
-        and(
-          eq(disputeExplanations.stripeId, stripeId),
-          eq(disputeExplanations.userId, userId),
-        ),
-      )
-      .orderBy(desc(disputeExplanations.updatedAt))
-      .limit(1);
-
-    let row;
-
-    if (existing[0]) {
-      const [updated] = await db
-        .update(disputeExplanations)
-        .set({
-          explanation: explanationText,
-          updatedAt: new Date(),
-        })
-        .where(eq(disputeExplanations.id, existing[0].id))
-        .returning();
-
-      row = updated;
-    } else {
-      const [inserted] = await db
-        .insert(disputeExplanations)
-        .values({
-          userId,
-          stripeId,
-          explanation: explanationText,
-        })
-        .returning();
-
-      row = inserted;
-    }
+    const row = await upsertExplanation(stripeId, userId, text);
 
     return res.json({
       explanation: {
