@@ -338,26 +338,32 @@ router.post("/:stripeId", async (req: any, res) => {
             ? file.storedPath
             : path.join(process.cwd(), file.storedPath);
 
-          if (fs.existsSync(absPath)) {
-            const maxImageWidth = usableWidth;
-            const maxImageHeight = doc.page.height - margin * 2 - 80;
+if (fs.existsSync(absPath)) {
+  const maxImageWidth = usableWidth;
+  const maxImageHeight = doc.page.height - margin * 2 - 80;
 
-            doc.image(absPath, {
-              fit: [maxImageWidth, maxImageHeight],
-              align: "left",
-              valign: "top",
-            });
-          } else {
-            doc
-              .fontSize(10)
-              .font("Helvetica")
-              .fillColor("red")
-              .text(
-                "⚠ Unable to embed exhibit image: file not found on server.",
-                { width: usableWidth, align: "left" },
-              )
-              .fillColor("black");
-          }
+  // 👇 add explicit x, y so TypeScript matches the correct overload
+  doc.image(
+    absPath,
+    margin,       // x position (align with text margin)
+    doc.y,        // y position (current cursor)
+    {
+      fit: [maxImageWidth, maxImageHeight],
+      align: "left",
+      valign: "top",
+    },
+  );
+} else {
+  doc
+    .fontSize(10)
+    .font("Helvetica")
+    .fillColor("red")
+    .text(
+      "⚠ Unable to embed exhibit image: file not found on server.",
+      { width: usableWidth, align: "left" },
+    )
+    .fillColor("black");
+}
         } catch (err) {
           console.error("Error embedding image evidence into PDF:", err);
           doc
