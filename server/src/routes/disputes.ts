@@ -69,7 +69,6 @@ router.get("/:id", async (req, res) => {
 router.get("/explanation/:id", async (req, res, next) => {
   try {
     const stripeId = req.params.id;
-    // For now, stub user; later this will come from real auth
     const userId = (req as any).user?.id ?? "demo-user";
 
     const rows = await db
@@ -147,13 +146,20 @@ router.post("/:id/explanation", async (req, res, next) => {
   try {
     const stripeId = req.params.id;
     const userId = (req as any).user?.id ?? "demo-user";
-    const { text } = req.body as { text?: string };
 
-    if (typeof text !== "string" || !text.trim()) {
+    // Accept both { text } and { explanation }
+    const { text, explanation } = req.body as {
+      text?: string;
+      explanation?: string;
+    };
+
+    const payload = typeof text === "string" ? text : explanation;
+
+    if (typeof payload !== "string" || !payload.trim()) {
       return res.status(400).json({ error: "Explanation text is required" });
     }
 
-    const row = await upsertExplanation(stripeId, userId, text);
+    const row = await upsertExplanation(stripeId, userId, payload);
 
     return res.json({
       explanation: {
@@ -171,13 +177,19 @@ router.put("/explanation/:id", async (req, res, next) => {
   try {
     const stripeId = req.params.id;
     const userId = (req as any).user?.id ?? "demo-user";
-    const { text } = req.body as { text?: string };
 
-    if (typeof text !== "string" || !text.trim()) {
+    const { text, explanation } = req.body as {
+      text?: string;
+      explanation?: string;
+    };
+
+    const payload = typeof text === "string" ? text : explanation;
+
+    if (typeof payload !== "string" || !payload.trim()) {
       return res.status(400).json({ error: "Explanation text is required" });
     }
 
-    const row = await upsertExplanation(stripeId, userId, text);
+    const row = await upsertExplanation(stripeId, userId, payload);
 
     return res.json({
       explanation: {
